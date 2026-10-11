@@ -1,0 +1,24 @@
+openapi: 3.0.0
+info:
+  title: Silk Plugins Hub
+  version: 1.0.0
+# Every path goes to the function; the function itself is private and only the gateway's service account may call it.
+paths:
+  /:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: "{{FUNCTION_ID}}"
+        service_account_id: "{{GATEWAY_SA_ID}}"
+  /{path+}:
+    x-yc-apigateway-any-method:
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: "{{FUNCTION_ID}}"
+        service_account_id: "{{GATEWAY_SA_ID}}"

@@ -1,0 +1,28 @@
+{
+  "name": "silk-plugins-hub-server",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "repository": "github:asholk/silk-plugins-hub-server",
+  "description": "Server of Silk Plugins Hub: companies, private Obsidian plugin catalog, releases and updates",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/server.js",
+    "dev": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env --watch src/server.js",
+    "test": "node --no-warnings=ExperimentalWarning --test",
+    "admin": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/admin.js",
+    "import-release": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/import-release.js",
+    "migrate": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/migrate-from-sqlite.js"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^8.0.2",
+    "@ydbjs/auth": "^6.3.1",
+    "@ydbjs/core": "^6.3.1",
+    "@ydbjs/query": "^6.3.0",
+    "aws4fetch": "^1.0.20",
+    "fastify": "^5.12.5"
+  }
+}
