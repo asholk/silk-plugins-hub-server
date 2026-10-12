@@ -35,6 +35,9 @@ async function companiesPlugins(store, companyIds) {
 const releaseInfo = (release) => ({
   version: release.version,
   minAppVersion: release.min_app_version,
+  desktopOnly: release.desktop_only === true,
+  // Size of main.js: what the app loads when the plugin starts.
+  size: release.assets.find((a) => a.name === "main.js")?.size ?? 0,
   publishedAt: release.published_at,
   changes: release.changes,
 });
@@ -160,6 +163,7 @@ export function registerApiRoutes(app, ctx) {
         installedVersion: current,
         version: rel.version,
         minAppVersion: rel.min_app_version,
+        desktopOnly: rel.desktop_only === true,
         reason: !current ? "install" : revoked ? "revoked" : "update",
         changelog: history,
         assets,

@@ -8,6 +8,7 @@ import { registerAuthRoutes } from "./auth.js";
 import { registerApiRoutes } from "./api.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerPublishRoutes } from "./publish.js";
+import { backfillDesktopOnly } from "./releases.js";
 
 export async function openStore(config, { tokenProvider } = {}) {
   if (config.store.kind === "ydb") {
@@ -61,7 +62,7 @@ export async function buildApp(config = loadConfig(), { logger = true, store, to
   });
 
   app.get("/health", async () => ({ ok: true }));
-  app.get("/", async () => ({ service: "Silk Plugins Hub" }));
+  app.get("/", async () => ({ service: "Silk Hub" }));
   ctx.files.register(app);
   registerAuthRoutes(app, ctx);
   registerApiRoutes(app, ctx);
@@ -74,6 +75,7 @@ export async function buildApp(config = loadConfig(), { logger = true, store, to
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = loadConfig();
-  const { app } = await buildApp(config);
+  const { app, ctx } = await buildApp(config);
   await app.listen({ port: config.port, host: config.host });
+  await backfillDesktopOnly(ctx).catch((err) => app.log.error({ err }, "desktop-only backfill failed"));
 }

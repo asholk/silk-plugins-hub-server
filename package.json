@@ -4,7 +4,7 @@
   "private": true,
   "license": "MIT",
   "repository": "github:asholk/silk-plugins-hub-server",
-  "description": "Server of Silk Plugins Hub: companies, private Obsidian plugin catalog, releases and updates",
+  "description": "Server of Silk Hub: companies, private Obsidian plugin catalog, releases and updates",
   "type": "module",
   "engines": {
     "node": ">=22.13"

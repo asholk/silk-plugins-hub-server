@@ -1,6 +1,6 @@
 openapi: 3.0.0
 info:
-  title: Silk Plugins Hub
+  title: Silk Hub
   version: 1.0.0
 # Every path goes to the function; the function itself is private and only the gateway's service account may call it.
 paths:

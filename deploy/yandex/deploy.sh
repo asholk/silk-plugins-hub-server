@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Deploys Silk Plugins Hub to Yandex Cloud: a Cloud Function behind API Gateway, YDB and Object Storage.
-#   bash deploy/deploy.sh
+# Deploys Silk Hub to Yandex Cloud: a Cloud Function behind API Gateway, YDB and Object Storage.
+#   bash deploy/yandex/deploy.sh
 # Needs yc (configured with `yc init`). Creates the function and the gateway on the first run,
 # then uploads a new function version and applies the scaling limits.
 set -euo pipefail
-cd "$(dirname "$0")/.."
-[ -f deploy/cloud.env ] || { echo "Copy deploy/cloud.env.example to deploy/cloud.env and fill it in." >&2; exit 1; }
-source deploy/cloud.env
+cd "$(dirname "$0")/../.."
+[ -f deploy/yandex/cloud.env ] || { echo "Copy deploy/yandex/cloud.env.example to deploy/yandex/cloud.env and fill it in." >&2; exit 1; }
+source deploy/yandex/cloud.env
 YC=${YC:-yc}
 
 stage=$(mktemp -d)
@@ -38,14 +38,14 @@ id_by_name() {
 function_id=$(yc_retry serverless function list --folder-id "$FOLDER_ID" --format json | id_by_name "$FUNCTION_NAME" id)
 if [ -z "$function_id" ]; then
   yc_retry serverless function create --name "$FUNCTION_NAME" --folder-id "$FOLDER_ID" \
-    --description "Silk Plugins Hub service" >/dev/null || true
+    --description "Silk Hub service" >/dev/null || true
   function_id=$(yc_retry serverless function list --folder-id "$FOLDER_ID" --format json | id_by_name "$FUNCTION_NAME" id)
   [ -n "$function_id" ] || { echo "Could not create the function" >&2; exit 1; }
   echo "Created function $function_id"
 fi
 
 # The gateway comes first: its domain is the service's public address (BASE_URL).
-sed -e "s/{{FUNCTION_ID}}/$function_id/g" -e "s/{{GATEWAY_SA_ID}}/$GATEWAY_SA_ID/g" deploy/gateway.yaml > "$spec"
+sed -e "s/{{FUNCTION_ID}}/$function_id/g" -e "s/{{GATEWAY_SA_ID}}/$GATEWAY_SA_ID/g" deploy/yandex/gateway.yaml > "$spec"
 domain=$(yc_retry serverless api-gateway list --folder-id "$FOLDER_ID" --format json | id_by_name "$GATEWAY_NAME" domain)
 if [ -z "$domain" ]; then
   yc_retry serverless api-gateway create --name "$GATEWAY_NAME" --folder-id "$FOLDER_ID" --spec "$spec" >/dev/null || true

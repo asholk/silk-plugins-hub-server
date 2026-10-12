@@ -65,6 +65,6 @@ label { white-space:nowrap; }
 export function page({ title, nav, body }) {
   return html`<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} · Silk Plugins Hub</title><style>${raw(STYLE)}</style></head>
+<title>${title} · Silk Hub</title><style>${raw(STYLE)}</style></head>
 <body>${nav ?? ""}<main>${body}</main></body></html>`.toString();
 }

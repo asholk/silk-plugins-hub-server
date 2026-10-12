@@ -28,6 +28,9 @@ export function localFiles({ dataDir, baseUrl, secret }) {
     async get(key) {
       return fs.existsSync(file(key)) ? fs.readFileSync(file(key)) : null;
     },
+    async delete(key) {
+      fs.rmSync(file(key), { force: true });
+    },
     async url(key, ttl) {
       return link("files", key, ttl);
     },
@@ -79,6 +82,10 @@ export function s3Files({ bucket, accessKeyId, secretAccessKey, endpoint = "http
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`storage GET ${key}: ${res.status}`);
       return Buffer.from(await res.arrayBuffer());
+    },
+    async delete(key) {
+      const res = await aws.fetch(objectUrl(key), { method: "DELETE" });
+      if (!res.ok && res.status !== 404) throw new Error(`storage DELETE ${key}: ${res.status}`);
     },
     url: (key, ttl) => presign(key, "GET", ttl),
     uploadUrl: (key, ttl) => presign(key, "PUT", ttl),

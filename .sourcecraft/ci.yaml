@@ -1,0 +1,31 @@
+# On every push to master: run the tests, then deploy to the server.
+# Repository secrets:
+#   DEPLOY_HOST     the server address
+#   DEPLOY_SSH_KEY  private key whose public half is allowed to run only the deploy command on the server
+#                   (deploy/server/ci_deploy_key.pub, installed by deploy/server/install.sh)
+on:
+  push:
+    - workflows: [deploy]
+      filter:
+        branches: [master]
+
+workflows:
+  deploy:
+    tasks:
+      - name: test-and-deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        cubes:
+          - name: test
+            image: node:22
+            script:
+              - npm ci
+              - npm test
+          - name: deploy
+            image: node:22
+            script:
+              - install -m 600 /dev/null /tmp/deploy_key
+              - printf '%s\n' "$DEPLOY_SSH_KEY" > /tmp/deploy_key
+              - DEPLOY_KEY=/tmp/deploy_key bash deploy/server/deploy.sh
+              - rm -f /tmp/deploy_key

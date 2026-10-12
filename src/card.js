@@ -2,7 +2,7 @@ import { isCardImage } from "./releases.js";
 
 /**
  * Points image links of a card or guide to signed, time-limited file links, so they load in <img>
- * (Silk Plugins Hub and the admin plugin) without an Authorization header.
+ * (Silk Hub and the admin plugin) without an Authorization header.
  */
 export async function resolveCardImages(ctx, release, markdown = release.card) {
   const images = new Map(release.assets.filter((a) => isCardImage(a.name)).map((a) => [a.name, a.key]));

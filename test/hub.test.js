@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import { buildApp } from "../src/server.js";
 import { loadConfig } from "../src/config.js";
 import { parseChangelog } from "../src/changelog.js";
-import { storeRelease } from "../src/releases.js";
+import { backfillDesktopOnly, storeRelease } from "../src/releases.js";
 import { compareVersions, signToken } from "../src/util.js";
 import { setAdminPassword } from "../src/admin/auth.js";
 import { issueTokens } from "../src/auth.js";
@@ -348,4 +348,106 @@ test("admin creates a company with plugins, sets access per plugin and sees the 
   await admin("DELETE", "/admin-api/companies/1");
   assert.equal((await store.list("companies")).length, 0);
   assert.equal((await store.list("company_plugins")).length, 0);
+});
+
+test("admin manages admins, user sessions, company codes and releases by hand", async (t) => {
+  const { app, ctx, store } = await setup(t);
+  const admin = await adminApi(app, store);
+
+  // Administrators: add, list, can't delete yourself, change own password.
+  assert.equal((await admin("POST", "/admin-api/admins", { username: "second", password: "short" })).statusCode, 400);
+  assert.equal((await admin("POST", "/admin-api/admins", { username: "second", password: "another-long-password" })).statusCode, 200);
+  assert.deepEqual((await admin("GET", "/admin-api/admins")).json().admins, [
+    { username: "boss", self: true },
+    { username: "second", self: false },
+  ]);
+  assert.equal((await admin("DELETE", "/admin-api/admins/boss")).statusCode, 400);
+  assert.equal((await admin("DELETE", "/admin-api/admins/second")).statusCode, 200);
+  assert.equal((await admin("POST", "/admin-api/me/password", { current: "wrong", password: "new-long-password" })).statusCode, 400);
+  const changed = await admin("POST", "/admin-api/me/password", { current: "correct-horse-battery", password: "new-long-password" });
+  assert.equal(changed.statusCode, 200);
+  assert.equal((await admin("GET", "/admin-api/me")).statusCode, 401, "the old session ends");
+  const headers = { authorization: `Bearer ${changed.json().token}` };
+  const call = (method, url, payload) => app.inject({ method, url, headers, payload });
+  assert.equal((await call("GET", "/admin-api/me")).statusCode, 200, "the new token works");
+
+  // Company code.
+  await call("POST", "/admin-api/companies", { name: "ACME", slug: "acme" });
+  await call("POST", "/admin-api/companies", { name: "Other", slug: "other" });
+  assert.equal((await call("PATCH", "/admin-api/companies/1", { slug: "other" })).statusCode, 409);
+  assert.equal((await call("PATCH", "/admin-api/companies/1", { slug: "Bad code" })).statusCode, 400);
+  assert.equal((await call("PATCH", "/admin-api/companies/1", { slug: "acme-2" })).json().slug, "acme-2");
+
+  // User sessions and deletion.
+  const user = await upsertUser(store, { email: "u@acme.ru" });
+  await addMember(store, user.id, 1);
+  const tokens = await issueTokens(ctx, user.id);
+  assert.equal((await call("GET", "/admin-api/users")).json().users[0].sessions, 1);
+  assert.equal((await call("POST", `/admin-api/users/${user.id}/sign-out`)).json().ended, 1);
+  assert.equal((await app.inject({ method: "POST", url: "/auth/refresh", payload: { refreshToken: tokens.refreshToken } })).statusCode, 401);
+  assert.equal((await call("DELETE", `/admin-api/users/${user.id}`)).statusCode, 200);
+  assert.equal((await store.list("memberships")).length, 0);
+  assert.equal((await app.inject({ url: "/api/me", headers: { authorization: `Bearer ${tokens.accessToken}` } })).statusCode, 401);
+
+  // Release uploaded by hand, then deleted with its files.
+  await call("POST", "/admin-api/plugins", { id: "test-plugin", name: "Test" });
+  const rel = release("3.0.0");
+  const upload = { notes: "Changelog:\n- New: manual upload", files: Object.entries(rel.files).map(([name, buf]) => ({ name, data: buf.toString("base64") })) };
+  const up = await call("POST", "/admin-api/plugins/test-plugin/releases", upload);
+  assert.equal(up.statusCode, 200, up.body);
+  assert.equal(up.json().version, "3.0.0");
+  assert.equal((await call("POST", "/admin-api/plugins/test-plugin/releases", upload)).statusCode, 409);
+  const wrongId = { files: Object.entries(release("3.1.0", "", "other-plugin").files).map(([name, buf]) => ({ name, data: buf.toString("base64") })) };
+  assert.equal((await call("POST", "/admin-api/plugins/test-plugin/releases", wrongId)).statusCode, 400);
+  const detail = (await call("GET", "/admin-api/plugins/test-plugin")).json();
+  assert.deepEqual(detail.releases[0].files.map((f) => f.name), ["main.js", "manifest.json"]);
+  assert.equal(detail.releases[0].changes[0].text, "manual upload");
+  assert.ok(await ctx.files.get("plugins/test-plugin/3.0.0/main.js"));
+  assert.equal((await call("DELETE", "/admin-api/plugins/test-plugin/releases/3.0.0")).statusCode, 200);
+  assert.equal(await ctx.files.get("plugins/test-plugin/3.0.0/main.js"), null);
+  assert.equal((await call("GET", "/admin-api/plugins/test-plugin")).json().releases.length, 0);
+});
+
+test("admin adds several users to a company at once", async (t) => {
+  const { app, store } = await setup(t);
+  const admin = await adminApi(app, store);
+  await admin("POST", "/admin-api/companies", { name: "ACME", slug: "acme" });
+  const res = (await admin("POST", "/admin-api/companies/1/members", { emails: "a@acme.ru, B@acme.ru\nb@acme.ru; <c@acme.ru> not-an-email" })).json();
+  assert.deepEqual(res.added.map((u) => u.email), ["a@acme.ru", "b@acme.ru", "c@acme.ru"]);
+  assert.deepEqual(res.invalid, ["not-an-email"]);
+  assert.equal((await admin("GET", "/admin-api/companies/1")).json().members.length, 3);
+  // Adding the same people again changes nothing.
+  await admin("POST", "/admin-api/companies/1/members", { emails: ["a@acme.ru"] });
+  assert.equal((await store.list("users")).length, 3);
+  assert.equal((await store.list("memberships")).length, 3);
+});
+
+test("catalog says which plugins are desktop-only and how big main.js is; old releases are backfilled", async (t) => {
+  const { app, ctx, store } = await setup(t, { DEV_LOGIN: "1" });
+  await store.put("companies", { id: 1, slug: "acme", name: "ACME", email_domains: "acme.ru" });
+  for (const id of ["desk-plugin", "old-plugin"]) {
+    await store.put("plugins", { id, name: id, description: "", instructions: "" });
+    await store.put("company_plugins", { company_id: 1, plugin_id: id, required: false });
+  }
+  const desk = release("1.0.0", "", "desk-plugin");
+  desk.files["manifest.json"] = Buffer.from(JSON.stringify({ id: "desk-plugin", name: "Desk", version: "1.0.0", isDesktopOnly: true }));
+  await storeRelease(ctx, "desk-plugin", desk);
+  const old = release("1.0.0", "", "old-plugin");
+  old.files["manifest.json"] = Buffer.from(JSON.stringify({ id: "old-plugin", name: "Old", version: "1.0.0", isDesktopOnly: true }));
+  const stored = await storeRelease(ctx, "old-plugin", old);
+  // A release stored before the flag existed.
+  const { desktop_only: _flag, ...legacy } = stored;
+  await store.put("releases", legacy);
+  await backfillDesktopOnly(ctx);
+
+  const user = await upsertUser(store, { email: "user@acme.ru", name: "U" });
+  await addMember(store, user.id, 1);
+  const auth = { authorization: `Bearer ${(await issueTokens(ctx, user.id)).accessToken}` };
+  const plugins = (await app.inject({ url: "/api/catalog?companies=1", headers: auth })).json().plugins;
+  const byId = Object.fromEntries(plugins.map((p) => [p.id, p.latest]));
+  assert.equal(byId["desk-plugin"].desktopOnly, true);
+  assert.equal(byId["old-plugin"].desktopOnly, true);
+  assert.equal(byId["desk-plugin"].size, desk.files["main.js"].length);
+  const check = await app.inject({ method: "POST", url: "/api/updates/check", headers: auth, payload: { companyIds: [1], selected: ["desk-plugin"], installed: {} } });
+  assert.equal(check.json().updates[0].desktopOnly, true);
 });

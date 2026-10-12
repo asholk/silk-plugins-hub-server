@@ -1,4 +1,6 @@
 node_modules/
 data/
 .env
-deploy/cloud.env
+deploy/yandex/cloud.env
+deploy/server/ci_deploy_key
+deploy/server/ci_deploy_key.pub

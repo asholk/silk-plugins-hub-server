@@ -40,8 +40,17 @@ export async function adminFromRequest(ctx, request) {
   return admin;
 }
 
+/** A session token of the admin, valid until it expires or the admin's session version changes. */
+export function issueAdminToken(ctx, admin) {
+  const token = signToken(
+    { adm: admin.username, typ: "admin", ver: admin.session_version ?? 0, exp: nowSec() + SESSION_TTL },
+    ctx.config.sessionSecret,
+  );
+  return { token, username: admin.username, expiresIn: SESSION_TTL };
+}
+
 export function registerAdminAuthRoutes(app, ctx) {
-  const { store, config } = ctx;
+  const { store } = ctx;
 
   app.post("/admin-api/login", async (req, reply) => {
     // Failed attempts per IP are kept in the store: serverless instances don't share memory.
@@ -58,11 +67,7 @@ export function registerAdminAuthRoutes(app, ctx) {
       return reply.code(401).send({ error: "wrong login or password" });
     }
     if (entry) await store.delete("login_failures", { ip: req.ip });
-    const token = signToken(
-      { adm: admin.username, typ: "admin", ver: admin.session_version ?? 0, exp: nowSec() + SESSION_TTL },
-      config.sessionSecret,
-    );
-    return { token, username: admin.username, expiresIn: SESSION_TTL };
+    return issueAdminToken(ctx, admin);
   });
 
   app.post("/admin-api/logout", async (req) => {

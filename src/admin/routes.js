@@ -1,4 +1,4 @@
-import { adminFromRequest, registerAdminAuthRoutes } from "./auth.js";
+import { adminFromRequest, issueAdminToken, registerAdminAuthRoutes, setAdminPassword, verifyPassword } from "./auth.js";
 import {
   addMember,
   byName,
@@ -11,7 +11,8 @@ import {
 } from "../data.js";
 import { resolveCardImages } from "../card.js";
 import { newPublishToken } from "../publish.js";
-import { isValidPluginId, isValidVersion } from "../util.js";
+import { storeRelease } from "../releases.js";
+import { isValidPluginId, isValidVersion, nowSec } from "../util.js";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+$/;
@@ -33,7 +34,7 @@ const pluginOut = (p) => ({
 });
 
 /**
- * JSON API of the admin plugin (Silk Plugins Hub Admin) under /admin-api. Admins sign in with login and
+ * JSON API of the admin plugin (Silk Hub Admin) under /admin-api. Admins sign in with login and
  * password and send the issued token as `Authorization: Bearer`; Hub users' tokens don't work here.
  */
 export function registerAdminRoutes(app, ctx) {
@@ -108,6 +109,12 @@ export function registerAdminRoutes(app, ctx) {
     const next = { ...company };
     if (req.body?.name !== undefined) next.name = str(req.body.name) || company.name;
     if (req.body?.emailDomains !== undefined) next.email_domains = parseDomains(req.body.emailDomains).join(", ");
+    if (req.body?.slug !== undefined && str(req.body.slug).toLowerCase() !== company.slug) {
+      const slug = str(req.body.slug).toLowerCase();
+      if (!SLUG_RE.test(slug)) return bad(reply, "the code must be latin letters, digits and hyphens");
+      if ((await store.list("companies", { slug })).length) return reply.code(409).send({ error: `code ${slug} is taken` });
+      next.slug = slug;
+    }
     await store.put("companies", next);
     return companyOut(next);
   });
@@ -131,6 +138,24 @@ export function registerAdminRoutes(app, ctx) {
   app.post("/admin-api/companies/:id/members", async (req, reply) => {
     const company = await companyById(req.params.id);
     if (!company) return notFound(reply);
+    // Several addresses at once: `emails` as a list or text separated by commas, spaces or new lines.
+    if (req.body?.emails !== undefined) {
+      const raw = Array.isArray(req.body.emails) ? req.body.emails.join(" ") : String(req.body.emails);
+      const candidates = [...new Set(raw.split(/[\s,;]+/).map((e) => e.trim().replace(/^<|>$/g, "").toLowerCase()).filter(Boolean))];
+      if (candidates.length > 500) return bad(reply, "at most 500 addresses at once");
+      const added = [];
+      const invalid = [];
+      for (const email of candidates) {
+        if (!EMAIL_RE.test(email)) {
+          invalid.push(email);
+          continue;
+        }
+        const user = await upsertUser(store, { email });
+        await addMember(store, user.id, company.id);
+        added.push(userOut(user));
+      }
+      return { added, invalid };
+    }
     const email = str(req.body?.email);
     if (!EMAIL_RE.test(email)) return bad(reply, "invalid email");
     const user = await upsertUser(store, { email });
@@ -147,12 +172,38 @@ export function registerAdminRoutes(app, ctx) {
   app.get("/admin-api/users", async () => {
     const users = (await store.list("users")).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const memberships = await store.list("memberships");
+    const now = nowSec();
+    const sessions = (await store.list("refresh_tokens")).filter((t) => t.expires_at > now);
     return {
       users: users.map((u) => ({
         ...userOut(u),
         companyIds: memberships.filter((m) => m.user_id === u.id).map((m) => m.company_id),
+        sessions: sessions.filter((t) => t.user_id === u.id).length,
       })),
     };
+  });
+
+  const endSessions = async (userId) => {
+    const tokens = (await store.list("refresh_tokens")).filter((t) => t.user_id === userId);
+    for (const t of tokens) await store.delete("refresh_tokens", t);
+    return tokens.length;
+  };
+
+  // Ends the user's sessions in every vault: refresh stops at once, access tokens expire within an hour.
+  app.post("/admin-api/users/:id/sign-out", async (req, reply) => {
+    const userId = Number(req.params.id);
+    if (!(await store.get("users", { id: userId }))) return notFound(reply);
+    return { ended: await endSessions(userId) };
+  });
+
+  // Removes the user, their memberships and sessions. They can sign in again later as a new user.
+  app.delete("/admin-api/users/:id", async (req, reply) => {
+    const userId = Number(req.params.id);
+    if (!(await store.get("users", { id: userId }))) return notFound(reply);
+    for (const m of await store.list("memberships", { user_id: userId })) await store.delete("memberships", m);
+    await endSessions(userId);
+    await store.delete("users", { id: userId });
+    return { ok: true };
   });
 
   app.put("/admin-api/users/:id/companies", async (req, reply) => {
@@ -211,6 +262,7 @@ export function registerAdminRoutes(app, ctx) {
         minAppVersion: r.min_app_version,
         revoked: !!r.revoked,
         changes: r.changes ?? [],
+        files: (r.assets ?? []).map((a) => ({ name: a.name, size: a.size })),
       })),
       card: await doc("card"),
       guide: await doc("guide"),
@@ -260,4 +312,74 @@ export function registerAdminRoutes(app, ctx) {
       return { ok: true };
     });
   }
+
+  // A release uploaded by hand, without CI: the same checks as publishing (manifest id, version, sizes).
+  app.post("/admin-api/plugins/:id/releases", { bodyLimit: 30 * 1024 * 1024 }, async (req, reply) => {
+    const plugin = await pluginById(req.params.id);
+    if (!plugin) return notFound(reply);
+    const list = Array.isArray(req.body?.files) ? req.body.files : [];
+    if (list.length === 0 || list.length > 40) return bad(reply, "1-40 files expected");
+    const files = {};
+    for (const f of list) {
+      const name = str(f?.name);
+      if (!name || /[\\/]/.test(name) || files[name]) return bad(reply, `unexpected file ${name}`);
+      files[name] = Buffer.from(String(f?.data ?? ""), "base64");
+    }
+    try {
+      const release = await storeRelease(ctx, plugin.id, { notes: String(req.body?.notes ?? ""), files });
+      if (!release) return reply.code(409).send({ error: "this version is already published" });
+      return { version: release.version, files: release.assets.map((a) => a.name) };
+    } catch (err) {
+      return bad(reply, err.message);
+    }
+  });
+
+  // Deletes a release and its files. Users who installed it keep their copy; revoking is usually enough.
+  app.delete("/admin-api/plugins/:id/releases/:version", async (req, reply) => {
+    const { id, version } = req.params;
+    const rel = isValidPluginId(id) && isValidVersion(version) ? await store.get("releases", { plugin_id: id, version }) : null;
+    if (!rel) return notFound(reply);
+    for (const a of rel.assets ?? []) await ctx.files.delete(a.key).catch(() => undefined);
+    await store.delete("releases", rel);
+    return { ok: true };
+  });
+
+  // ---------- Administrators ----------
+  app.get("/admin-api/admins", async (req) => ({
+    admins: (await store.list("admins"))
+      .map((a) => ({ username: a.username, self: a.username === req.admin.username }))
+      .sort((a, b) => a.username.localeCompare(b.username)),
+  }));
+
+  app.post("/admin-api/admins", async (req, reply) => {
+    const username = str(req.body?.username);
+    const password = String(req.body?.password ?? "");
+    if (!/^[A-Za-z0-9._-]{2,64}$/.test(username)) return bad(reply, "login: 2-64 latin letters, digits, dots, hyphens");
+    if (await store.get("admins", { username })) return reply.code(409).send({ error: `${username} already exists` });
+    try {
+      await setAdminPassword(store, username, password);
+    } catch (err) {
+      return bad(reply, err.message);
+    }
+    return { username };
+  });
+
+  app.delete("/admin-api/admins/:username", async (req, reply) => {
+    const { username } = req.params;
+    if (username === req.admin.username) return bad(reply, "an administrator can't delete themselves");
+    if (!(await store.get("admins", { username }))) return notFound(reply);
+    await store.delete("admins", { username });
+    return { ok: true };
+  });
+
+  // Changes the signed-in admin's password. Other sessions end; this one gets a fresh token.
+  app.post("/admin-api/me/password", async (req, reply) => {
+    if (!verifyPassword(String(req.body?.current ?? ""), req.admin.password_hash)) return bad(reply, "wrong current password");
+    try {
+      await setAdminPassword(store, req.admin.username, String(req.body?.password ?? ""));
+    } catch (err) {
+      return bad(reply, err.message);
+    }
+    return issueAdminToken(ctx, await store.get("admins", { username: req.admin.username }));
+  });
 }

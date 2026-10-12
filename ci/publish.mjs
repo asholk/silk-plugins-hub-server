@@ -1,4 +1,4 @@
-// Publishes the built plugin to Silk Plugins Hub: main.js, manifest.json, styles.css and the hub/ docs
+// Publishes the built plugin to Silk Hub: main.js, manifest.json, styles.css and the hub/ docs
 // (card.md, guide.md, screenshots). Release notes are the commit's "Changelog:" block.
 //
 //   HUB_URL=https://… HUB_PUBLISH_TOKEN=hubp_… node ci/publish.mjs [--notes notes.txt]

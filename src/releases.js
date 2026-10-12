@@ -49,6 +49,7 @@ export async function storeRelease(ctx, pluginId, { tag, notes, publishedAt, fil
     plugin_id: pluginId,
     version: manifest.version,
     min_app_version: manifest.minAppVersion ?? "0.0.0",
+    desktop_only: manifest.isDesktopOnly === true,
     tag: tag ?? manifest.version,
     notes: notes ?? "",
     card: files[CARD_NAME] ? files[CARD_NAME].toString("utf8") : "",
@@ -60,6 +61,24 @@ export async function storeRelease(ctx, pluginId, { tag, notes, publishedAt, fil
   };
   await ctx.store.put("releases", release);
   return release;
+}
+
+/**
+ * Fills desktop_only for releases stored before the flag existed, from their manifest.json.
+ * Runs once at startup; a release whose manifest can't be read stays unmarked.
+ */
+export async function backfillDesktopOnly(ctx) {
+  for (const release of await ctx.store.list("releases")) {
+    if (release.desktop_only !== undefined) continue;
+    const asset = release.assets.find((a) => a.name === "manifest.json");
+    try {
+      const buf = asset ? await ctx.files.get(asset.key) : null;
+      if (!buf) continue;
+      await ctx.store.put("releases", { ...release, desktop_only: JSON.parse(buf.toString("utf8")).isDesktopOnly === true });
+    } catch (err) {
+      ctx.log.warn({ err, plugin: release.plugin_id, version: release.version }, "cannot read release manifest");
+    }
+  }
 }
 
 /** Reads a release folder from disk: plugin files from the root, card, guide and screenshots from hub/. */
